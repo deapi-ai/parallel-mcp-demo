@@ -6,27 +6,22 @@ Runs the same question through the Parallel Task API twice: once with the agent'
 own web tools, once with the deAPI MCP server attached. The first run gets the
 YouTube navigation bar. The second gets what the speaker actually said.
 
-Two transcript paths are implemented:
+Both transcript paths take a single MCP tool call:
 
-  inline    One MCP tool call. The transcript comes back inside the tool result.
-            Works up to Parallel's 25,000-character per-result cap, which is
-            roughly 20 minutes of speech.
+  inline    The transcript comes back inside the tool result. Works up to
+            Parallel's 25,000-character per-result cap, which is roughly
+            20 minutes of speech.
 
-  two-step  Two MCP tool calls. The transcription tool is asked to store the
-            result instead of returning it, then check_job_status hands back a
-            download URL the agent reads with its own web tools. No size cap.
-
-The two-step path also works around an open deAPI bug: video_url_transcription
-drops result_url from its response, so the URL has to be recovered from
-check_job_status. See jira-mcp-result-url.md. Once that lands, step 2 goes away.
+  by-link   The transcription tool stores the transcript and returns result_url,
+            a download link the agent reads with its own web tools. No size cap.
 
 Requirements: Python 3.9+. No third-party packages.
 
     export PARALLEL_API_KEY=...
     export DEAPI_API_KEY=...
     python3 demo.py                          # short video, inline path
-    python3 demo.py --long                   # 42-minute video, two-step path
-    python3 demo.py <youtube-url> "<question>"
+    python3 demo.py --long                   # 42-minute video, by-link path
+    python3 demo.py <video-url> "<question>"
 """
 
 import argparse
@@ -46,7 +41,7 @@ SHORT_VIDEO = "https://www.youtube.com/watch?v=jNQXAC9IVRw"
 SHORT_QUESTION = "What exactly does the speaker say about the elephants? Quote his words."
 
 # A 42-minute conference talk. Its transcript is ~48,000 characters, which is
-# almost twice Parallel's per-result cap - this is what the two-step path is for.
+# almost twice Parallel's per-result cap - this is what the by-link path is for.
 LONG_VIDEO = "https://www.youtube.com/watch?v=bZQun8Y4L2A"
 LONG_QUESTION = (
     "What does the speaker say the stages of the GPT training pipeline are? "
@@ -108,28 +103,33 @@ def run_task(api_key, question, processor, mcp_servers=None, poll_seconds=1800):
 # The two prompts
 # --------------------------------------------------------------------------
 
+def model_hint(url):
+    # The tool defaults to WhisperLargeV3. On TikTok, WhisperLargeV3Ct2 is
+    # cheaper and returns no text, rather than invented text, on clips without speech.
+    if "tiktok.com" in url:
+        return " Call it with model set to WhisperLargeV3Ct2."
+    return ""
+
+
 def inline_prompt(url, question):
     return (
         f"Watch {url} and answer this question: {question}\n\n"
         "The spoken content of the video is not present in the page HTML. "
         "Use the deapi MCP server's video_url_transcription tool to obtain the "
-        "transcript, then answer from it."
+        f"transcript, then answer from it.{model_hint(url)}"
     )
 
 
-def two_step_prompt(url, question):
+def by_link_prompt(url, question):
     return (
         f"Watch {url} and answer this question: {question}\n\n"
         "The spoken content is not in the page HTML, and this video is long "
         "enough that the transcript will not fit in a single tool result. "
-        "Use the deapi MCP server in two steps:\n"
-        "1. Call video_url_transcription with return_result_in_response set to "
-        "false. It stores the transcript and returns a job_id. Ignore the empty "
-        "result field - that is expected on this path.\n"
-        "2. Call check_job_status with that job_id. It returns result_url, a "
-        "direct link to the full transcript as a text file.\n"
-        "Then read result_url with your own web tools and answer from the "
-        "transcript. Quote exactly; do not guess."
+        "Call the deapi MCP server's video_url_transcription tool with "
+        "return_result_in_response set to false. Its result field will be "
+        "empty; result_url is a direct link to the full transcript as a text "
+        f"file.{model_hint(url)} Read result_url with your own web tools and "
+        "answer from the transcript. Quote exactly; do not guess."
     )
 
 
@@ -168,7 +168,8 @@ def describe_calls(result):
         content = call.get("content") or ""
         error = call.get("error")
         print(f"    call {index}: {call.get('server_name')}.{call.get('tool_name')}")
-        for key in ("video_url", "include_ts", "return_result_in_response", "job_id"):
+        for key in ("video_url", "model", "include_ts", "include_metadata",
+                    "return_result_in_response"):
             if key in arguments:
                 print(f"              {key}={arguments[key]}")
         print(f"              returned {len(content)} chars"
@@ -185,8 +186,9 @@ def heard_the_video(text, url):
     }.get(url)
     if not markers:
         return None
-    lowered = text.lower()
-    return sum(1 for marker in markers if marker in lowered), len(markers)
+    # Transcripts spell these both ways ("pre-training" / "pretraining").
+    flat = text.lower().replace("-", "")
+    return sum(1 for marker in markers if marker.replace("-", "") in flat), len(markers)
 
 
 # --------------------------------------------------------------------------
@@ -194,12 +196,14 @@ def heard_the_video(text, url):
 def main():
     parser = argparse.ArgumentParser(
         description="Compare a Parallel task run with and without the deAPI MCP server.")
-    parser.add_argument("url", nargs="?", help="video URL (YouTube, X, Twitch, Kick)")
+    parser.add_argument("url", nargs="?", help="video URL (YouTube, X, Twitch, Kick, TikTok)")
     parser.add_argument("question", nargs="?", help="what to ask about the video")
     parser.add_argument("--long", action="store_true",
-                        help="use the 42-minute example and the two-step path")
-    parser.add_argument("--two-step", action="store_true",
-                        help="force the two-step path on any video")
+                        help="use the 42-minute example and the by-link path")
+    parser.add_argument("--by-link", action="store_true",
+                        help="force the by-link path on any video")
+    parser.add_argument("--processor", default="lite",
+                        help="Parallel processor for both runs (default: lite)")
     parser.add_argument("--skip-control", action="store_true",
                         help="skip the run without the MCP server")
     args = parser.parse_args()
@@ -217,18 +221,18 @@ def main():
         question = args.question or (SHORT_QUESTION if url == SHORT_VIDEO
                                      else "Summarise what the speaker says, quoting exactly.")
 
-    two_step = args.two_step or args.long
+    by_link = args.by_link or args.long
 
     print(f"\nvideo     {url}")
     print(f"question  {question}")
-    print(f"path      {'two-step (stored transcript + download URL)' if two_step else 'inline (single tool call)'}")
+    print(f"path      {'by-link (transcript returned as result_url)' if by_link else 'inline (transcript in the tool result)'}")
 
     if not args.skip_control:
         print("\n=== 1. Parallel on its own =========================================")
         _, control, seconds = run_task(
             parallel_key,
             f"Watch {url} and answer this question: {question}",
-            processor="lite",
+            processor=args.processor,
         )
         text = answer_text(control)
         print(f"    finished in {seconds:.1f}s")
@@ -239,19 +243,12 @@ def main():
             print(f"\n    spoken words found: {score[0]} of {score[1]}")
 
     print("\n=== 2. Parallel with the deAPI MCP server ==========================")
-    if two_step:
-        # base, not lite: Parallel documents lite as making at most one tool call.
-        processor = "base"
-        prompt = two_step_prompt(url, question)
-        tools = ["video_url_transcription", "check_job_status"]
-    else:
-        processor = "lite"
-        prompt = inline_prompt(url, question)
-        tools = ["video_url_transcription"]
+    prompt = by_link_prompt(url, question) if by_link else inline_prompt(url, question)
+    tools = ["video_url_transcription"]
 
-    print(f"    processor {processor}, allowed tools: {', '.join(tools)}")
+    print(f"    processor {args.processor}, allowed tools: {', '.join(tools)}")
     _, augmented, seconds = run_task(
-        parallel_key, prompt, processor=processor,
+        parallel_key, prompt, processor=args.processor,
         mcp_servers=deapi_server(deapi_key, tools),
     )
     text = answer_text(augmented)
@@ -263,8 +260,9 @@ def main():
         print(f"\n    spoken words found: {score[0]} of {score[1]}")
 
     print("\nCost of this comparison: two Parallel runs plus one transcription.")
-    print("Parallel lite is $0.005 per run, base $0.010. deAPI transcription is")
-    print("$0.005 + $0.0000130208 per second of video.\n")
+    print("Parallel lite is $0.005 per run. deAPI transcription of a YouTube video")
+    print("is $0.005 + $0.0000130208 per second; TikTok and the other platforms")
+    print("are priced differently - see the video_url_transcription_price tool.\n")
 
 
 if __name__ == "__main__":

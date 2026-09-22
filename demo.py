@@ -127,8 +127,8 @@ def by_link_prompt(url, question):
         "enough that the transcript will not fit in a single tool result. "
         "Call the deapi MCP server's video_url_transcription tool with "
         "return_result_in_response set to false. Its result field will be "
-        "empty; result_url is a direct link to the full transcript as a text "
-        f"file.{model_hint(url)} Read result_url with your own web tools and "
+        "empty; result_url is a direct link to a file with the full "
+        f"transcript.{model_hint(url)} Read result_url with your own web tools and "
         "answer from the transcript. Quote exactly; do not guess."
     )
 

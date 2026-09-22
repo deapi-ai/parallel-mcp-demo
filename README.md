@@ -56,8 +56,8 @@ worth caring about, because nothing in the response marks it as wrong.
 - `mcp_servers` wired to a third-party MCP server with bearer auth, end to end.
 - Two transcript strategies and when each applies — inline under Parallel's
   per-result cap, handed over as a link above it. Both are one tool call.
-- What a tool result actually costs, read from account balance rather than from
-  a price endpoint.
+- What a tool result actually costs, read from the account balance rather than
+  from a price endpoint.
 
 ## Architecture
 
@@ -94,7 +94,7 @@ rather than invented text, on clips without speech.
 
 ## Measured
 
-Current version, 2026-09-22. Every run on `lite`, one MCP call each. The deAPI
+Current version, 2026-09-22. Every run used `lite` and made one MCP call. The deAPI
 balance was read immediately before and after each run, so the cost column is
 what was actually charged. It matched the price the tool reported to six
 decimal places every time.
@@ -167,20 +167,23 @@ cut off mid-sentence.
 
 **The fix is not chunking.** The link path asks the transcription tool to store
 its output instead of returning it. The tool returns `result_url`, a signed
-download link, and the agent reads it with its own web tools. Parallel is very good at turning a URL
-into the parts relevant to a question — that is its core product. Handing the
-transcript over as a URL plays to that instead of fighting the character cap,
-and it removes the length limit entirely rather than raising it.
+download link, and the agent reads it with its own web tools. Parallel is very
+good at turning a URL into the parts relevant to a question — that is its core
+product. Handing the transcript over as a URL plays to that instead of fighting
+the character cap, and it removes the length limit entirely rather than raising
+it.
 
 ## Cost
 
-Parallel `lite` $0.005 per run, `base` $0.010. deAPI transcription is
-`$0.005 + $0.0000130208 per second`, so 19 seconds costs half a cent and 42
-minutes costs four cents. Quoted price matched the actual charge to six decimal
-places on every run except the truncated one, which was billed twice because the
-agent called the tool twice.
+Parallel `lite` $0.005 per run, `base` $0.010. deAPI transcription of a YouTube
+video is `$0.005 + $0.0000130208 per second`, so 19 seconds costs half a cent
+and 42 minutes costs four cents. Other platforms are priced differently; the
+`video_url_transcription_price` tool quotes any of them. The quoted price matched
+the actual charge to six decimal places on every run, except the truncated one,
+which was billed twice because the agent called the tool twice.
 
-The whole six-run comparison cost $0.035 on Parallel and about $0.13 on deAPI.
+The three runs of 2026-09-22 cost $0.015 on Parallel at list price and
+$0.063580 on deAPI.
 
 ## Known limits
 
@@ -188,7 +191,8 @@ The whole six-run comparison cost $0.035 on Parallel and about $0.13 on deAPI.
   Inline gets truncated.
 - On the 42-minute inline run (2026-08-27), `lite` made two tool calls,
   despite the documented one-call limit, which doubled the transcription charge.
-  The link path avoids this: its result is small and the agent does not retry.
+  The link path avoids the problem: its tool result is small, and on our run the
+  agent did not retry.
 - The agent fills in optional tool parameters on its own. On the TikTok run it
   set `include_metadata: true`, which adds a flat $0.005. If cost matters, say in
   the prompt which options to leave off, or check `mcp_tool_calls[].arguments`.

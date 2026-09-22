@@ -6,21 +6,20 @@ Runs the same question through the Parallel Task API twice: once with the agent'
 own web tools, once with the deAPI MCP server attached. The first run gets the
 YouTube navigation bar. The second gets what the speaker actually said.
 
-Both transcript paths take a single MCP tool call:
+The transcript comes back inside the tool result, in one MCP call. Parallel
+cuts tool results at 25,000 characters, roughly 20 minutes of speech, so only
+that much of a long video reaches the agent.
 
-  inline    The transcript comes back inside the tool result. Works up to
-            Parallel's 25,000-character per-result cap, which is roughly
-            20 minutes of speech.
-
-  by-link   The transcription tool stores the transcript and returns result_url,
-            a download link the agent reads with its own web tools. No size cap.
+--by-link asks the tool for a download link (result_url) instead of the text.
+Parallel currently redacts that link before the agent sees it, so this path
+does not work; it is kept to reproduce the behaviour.
 
 Requirements: Python 3.9+. No third-party packages.
 
     export PARALLEL_API_KEY=...
     export DEAPI_API_KEY=...
     python3 demo.py                          # short video, inline path
-    python3 demo.py --long                   # 42-minute video, by-link path
+    python3 demo.py --long                   # 42-minute video, answer in the first minutes
     python3 demo.py <video-url> "<question>"
 """
 
@@ -41,7 +40,8 @@ SHORT_VIDEO = "https://www.youtube.com/watch?v=jNQXAC9IVRw"
 SHORT_QUESTION = "What exactly does the speaker say about the elephants? Quote his words."
 
 # A 42-minute conference talk. Its transcript is ~48,000 characters, which is
-# almost twice Parallel's per-result cap - this is what the by-link path is for.
+# almost twice Parallel's per-result cap. The question is about the first minutes,
+# which survive the truncation.
 LONG_VIDEO = "https://www.youtube.com/watch?v=bZQun8Y4L2A"
 LONG_QUESTION = (
     "What does the speaker say the stages of the GPT training pipeline are? "
@@ -199,9 +199,10 @@ def main():
     parser.add_argument("url", nargs="?", help="video URL (YouTube, X, Twitch, Kick, TikTok)")
     parser.add_argument("question", nargs="?", help="what to ask about the video")
     parser.add_argument("--long", action="store_true",
-                        help="use the 42-minute example and the by-link path")
+                        help="use the 42-minute example")
     parser.add_argument("--by-link", action="store_true",
-                        help="force the by-link path on any video")
+                        help="ask for a download link instead of the text "
+                             "(currently redacted by Parallel)")
     parser.add_argument("--processor", default="lite",
                         help="Parallel processor for both runs (default: lite)")
     parser.add_argument("--skip-control", action="store_true",
@@ -221,7 +222,7 @@ def main():
         question = args.question or (SHORT_QUESTION if url == SHORT_VIDEO
                                      else "Summarise what the speaker says, quoting exactly.")
 
-    by_link = args.by_link or args.long
+    by_link = args.by_link
 
     print(f"\nvideo     {url}")
     print(f"question  {question}")
